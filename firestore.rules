@@ -1,0 +1,95 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(cashbook) {
+      return isAuthenticated() && cashbook.userId == request.auth.uid;
+    }
+
+    function isCollaborator(cashbook) {
+      return isAuthenticated() && (request.auth.uid in cashbook.get('sharedUids', []));
+    }
+
+    function isPendingCollaborator(cashbook) {
+      return isAuthenticated() && (request.auth.uid in cashbook.get('sharedPendingUids', []));
+    }
+
+    function getEmailKey() {
+      return request.auth.token.email.replace('\\.', '_dot_').lower();
+    }
+
+    function canAdd(cashbook) {
+      return isOwner(cashbook) || (
+        isCollaborator(cashbook) && 
+        getEmailKey() in cashbook.get('sharedWith', {}) &&
+        cashbook.sharedWith[getEmailKey()].role != "CAN_VIEW" &&
+        cashbook.sharedWith[getEmailKey()].permissions.canAdd == true
+      );
+    }
+
+    function canEdit(cashbook) {
+      return isOwner(cashbook) || (
+        isCollaborator(cashbook) && 
+        getEmailKey() in cashbook.get('sharedWith', {}) &&
+        cashbook.sharedWith[getEmailKey()].role != "CAN_VIEW" &&
+        cashbook.sharedWith[getEmailKey()].permissions.canEdit == true
+      );
+    }
+
+    function canDelete(cashbook) {
+      return isOwner(cashbook) || (
+        isCollaborator(cashbook) && 
+        getEmailKey() in cashbook.get('sharedWith', {}) &&
+        cashbook.sharedWith[getEmailKey()].role != "CAN_VIEW" &&
+        cashbook.sharedWith[getEmailKey()].permissions.canDelete == true
+      );
+    }
+
+    function isValidTransaction(data) {
+      return data.amount is int && data.get('remarks', '').size() <= 500;
+    }
+
+    function isValidDue(data) {
+      return data.amount is int && data.get('remarks', '').size() <= 500;
+    }
+
+    // Rules for users profile collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Rules for cashbooks collection
+    match /cashbooks/{cashbookId} {
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow read, update: if isAuthenticated() && (isOwner(resource.data) || isCollaborator(resource.data) || isPendingCollaborator(resource.data));
+      allow delete: if isAuthenticated() && isOwner(resource.data);
+
+      // Rules for transactions subcollection
+      match /transactions/{transactionId} {
+        allow read: if isAuthenticated() && (isOwner(get(/databases/$(database)/documents/cashbooks/$(cashbookId)).data) || isCollaborator(get(/databases/$(database)/documents/cashbooks/$(cashbookId)).data));
+        allow create: if canAdd(get(/databases/$(database)/documents/cashbooks/$(cashbookId)).data) && isValidTransaction(request.resource.data);
+        allow update: if canEdit(get(/databases/$(database)/documents/cashbooks/$(cashbookId)).data) && isValidTransaction(request.resource.data);
+        allow delete: if canDelete(get(/databases/$(database)/documents/cashbooks/$(cashbookId)).data);
+      }
+
+      // Rules for dues subcollection
+      match /dues/{dueId} {
+        allow read: if isAuthenticated() && (isOwner(get(/databases/$(database)/documents/cashbooks/$(cashbookId)).data) || isCollaborator(get(/databases/$(database)/documents/cashbooks/$(cashbookId)).data));
+        allow create: if canAdd(get(/databases/$(database)/documents/cashbooks/$(cashbookId)).data) && isValidDue(request.resource.data);
+        allow update: if canEdit(get(/databases/$(database)/documents/cashbooks/$(cashbookId)).data) && isValidDue(request.resource.data);
+        allow delete: if canDelete(get(/databases/$(database)/documents/cashbooks/$(cashbookId)).data);
+      }
+
+      // Rules for categories subcollection
+      match /categories/{categoryId} {
+        allow read: if isAuthenticated() && (isOwner(get(/databases/$(database)/documents/cashbooks/$(cashbookId)).data) || isCollaborator(get(/databases/$(database)/documents/cashbooks/$(cashbookId)).data));
+        allow create, update, delete: if canEdit(get(/databases/$(database)/documents/cashbooks/$(cashbookId)).data);
+      }
+    }
+  }
+}
